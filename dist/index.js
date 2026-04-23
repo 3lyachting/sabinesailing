@@ -729,10 +729,11 @@ function registerLocalAdminRoutes(app) {
     try {
       const configuredEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
       const configuredHash = (process.env.ADMIN_PASSWORD_HASH || "").trim();
+      const configuredPlain = String(process.env.ADMIN_PASSWORD_PLAIN || "");
       const email = String(req.body?.email || "").trim().toLowerCase();
       const password = String(req.body?.password || "");
-      if (!configuredEmail || !configuredHash) {
-        return res.status(500).send("ADMIN_EMAIL ou ADMIN_PASSWORD_HASH manquant dans l'environnement.");
+      if (!configuredEmail || (!configuredHash && !configuredPlain)) {
+        return res.status(500).send("ADMIN_EMAIL + (ADMIN_PASSWORD_HASH ou ADMIN_PASSWORD_PLAIN) requis.");
       }
       if (!email || !password) {
         return res.status(400).send("Email et mot de passe requis.");
@@ -740,7 +741,9 @@ function registerLocalAdminRoutes(app) {
       if (email !== configuredEmail) {
         return res.status(401).send("Identifiants invalides.");
       }
-      const ok = await verifyCustomerPassword(password, configuredHash);
+      const ok = configuredPlain
+        ? password === configuredPlain
+        : await verifyCustomerPassword(password, configuredHash);
       if (!ok) {
         return res.status(401).send("Identifiants invalides.");
       }
