@@ -694,6 +694,9 @@ function registerOAuthRoutes(app) {
   });
 }
 function registerLocalAdminPages(app) {
+  app.get("/home/admin", (_req, res) => {
+    return res.redirect(302, "/home/admin/fallback");
+  });
   app.get("/home/admin/login", (_req, res) => {
     return res.redirect(302, "/home/admin/local-login");
   });
