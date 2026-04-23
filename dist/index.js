@@ -716,18 +716,46 @@ function registerLocalAdminPages(app) {
   <body>
     <div class="card">
       <h1>Connexion administrateur</h1>
-      <form method="post" action="/api/admin-auth/local-login">
+      <form id="admin-login-form">
         <label>Email</label>
         <input type="email" name="email" required />
         <label>Mot de passe</label>
         <input type="password" name="password" required />
         <button type="submit">Se connecter</button>
       </form>
+      <p id="err" style="color:#b42318;font-size:13px;margin-top:10px;min-height:18px"></p>
     </div>
+    <script>
+      const form = document.getElementById("admin-login-form");
+      const err = document.getElementById("err");
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        err.textContent = "";
+        const fd = new FormData(form);
+        const email = String(fd.get("email") || "");
+        const password = String(fd.get("password") || "");
+        try {
+          const response = await fetch("/api/admin-auth/local-login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ email, password })
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || !payload?.success) {
+            err.textContent = payload?.error || "Identifiants invalides.";
+            return;
+          }
+          window.location.href = "/home/admin";
+        } catch {
+          err.textContent = "Erreur reseau, reessayez.";
+        }
+      });
+    </script>
   </body>
 </html>`);
   });
-  app.get("/home/admin", async (req, res) => {
+  app.get("/home/admin/fallback", async (req, res) => {
     try {
       const user = await sdk.authenticateRequest(req);
       if (!user || user.role !== "admin") {
@@ -792,6 +820,10 @@ function registerAdminAuthRoutes(app) {
       });
       const cookieOptions = getSessionCookieOptions(req);
       res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      const acceptsHtml = String(req.headers.accept || "").includes("text/html");
+      if (acceptsHtml) {
+        return res.redirect(302, "/home/admin");
+      }
       return res.json({ success: true });
     } catch (error) {
       return res.status(500).json({ error: error?.message || "Erreur login local" });
