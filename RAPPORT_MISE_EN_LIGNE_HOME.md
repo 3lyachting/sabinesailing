@@ -88,3 +88,20 @@
 - Typecheck: OK
 - Compatibilite native `/home`: en place
 - Socle securite/SEO/AEO: en place (niveau P0/P1 pragmatique)
+
+## 10) Back-office sans Manus (avril 2026)
+- Le flux admin ne depend plus de Manus/OAuth pour la connexion locale.
+- Endpoints admin locaux disponibles:
+  - `POST /api/admin-auth/local-login`
+  - `GET /api/admin-auth/me`
+  - `POST /api/admin-auth/logout`
+- URL de connexion admin:
+  - `/home/admin/login`
+  - `/home/admin/local-login`
+- Variables Render a fournir pour l'admin local:
+  - `ADMIN_EMAIL`
+  - `ADMIN_PASSWORD_HASH` (recommande) **ou** `ADMIN_PASSWORD_PLAIN` (temporaire)
+  - `JWT_SECRET` (obligatoire, non vide)
+- Important:
+  - `ADMIN_BYPASS` doit rester absent ou `false` en production.
+  - Le back-office (reservations, disponibilites, documents, paiements, avis/contact) reste branche aux APIs existantes.

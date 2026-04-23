@@ -434,11 +434,8 @@ var GET_USER_INFO_WITH_JWT_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInf
 var OAuthService = class {
   constructor(client) {
     this.client = client;
-    console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl);
-    if (!ENV.oAuthServerUrl) {
-      console.error(
-        "[OAuth] ERROR: OAUTH_SERVER_URL is not configured! Set OAUTH_SERVER_URL environment variable."
-      );
+    if (ENV.oAuthServerUrl) {
+      console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl);
     }
   }
   decodeState(state) {
@@ -617,6 +614,7 @@ var SDKServer = class {
         openId: "local-admin",
         name: "Admin Local",
         email: process.env.ADMIN_EMAIL ?? null,
+        loginMethod: "local-admin",
         role: "admin",
         createdAt: signedInAt,
         updatedAt: signedInAt,
@@ -625,6 +623,9 @@ var SDKServer = class {
     }
     let user = await getUserByOpenId(sessionUserId);
     if (!user) {
+      if (!ENV.oAuthServerUrl) {
+        throw ForbiddenError("OAuth unavailable and user not found");
+      }
       try {
         const userInfo = await this.getUserInfoWithJwt(sessionCookie ?? "");
         await upsertUser({
@@ -692,99 +693,45 @@ function registerOAuthRoutes(app) {
     }
   });
 }
-function registerLocalAdminRoutes(app) {
-  app.get("/home/admin", async (req, res) => {
-    try {
-      const user = await sdk.authenticateRequest(req);
-      if (!user || user.role !== "admin") {
-        return res.redirect(302, "/home/admin/local-login");
-      }
-      return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
-<html lang="fr">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Admin Sabine Sailing</title>
-    <style>
-      body{font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;margin:0;padding:24px;color:#112a4a}
-      .card{max-width:760px;margin:20px auto;background:#fff;border:1px solid #dbe4f0;border-radius:12px;padding:24px}
-      h1{margin:0 0 8px}
-      p{color:#3d5576}
-      a{display:inline-block;margin:8px 8px 0 0;padding:10px 14px;background:#12355e;color:#fff;text-decoration:none;border-radius:8px}
-      code{background:#eef3fa;padding:2px 6px;border-radius:6px}
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <h1>Administration</h1>
-      <p>Connecte en tant que <strong>${user.name || "Admin"}</strong> (${user.openId}).</p>
-      <p>Le panneau React est temporairement indisponible. Cette page permet de continuer l'exploitation.</p>
-      <a href="/home/">Retour au site</a>
-      <a href="/api/customer-auth/logout">Deconnexion client</a>
-      <p style="margin-top:16px">Endpoints utiles:</p>
-      <p><code>/api/disponibilites</code> - disponibilites</p>
-      <p><code>/api/reservations</code> - reservations</p>
-      <p><code>/api/workflow/reservations/:id/documents</code> - documents dossier</p>
-    </div>
-  </body>
-</html>`);
-    } catch {
-      return res.redirect(302, "/home/admin/local-login");
-    }
-  });
-  app.get("/home/admin/local-login", (_req, res) => {
-    res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
-<html lang="fr">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Connexion admin locale</title>
-    <style>
-      body{font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;margin:0;padding:24px;color:#112a4a}
-      .card{max-width:420px;margin:40px auto;background:#fff;border:1px solid #dbe4f0;border-radius:12px;padding:24px}
-      h1{font-size:20px;margin:0 0 16px}
-      label{display:block;font-size:14px;margin:12px 0 6px}
-      input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #c5d2e5;border-radius:8px}
-      button{margin-top:16px;width:100%;padding:11px;border:0;border-radius:8px;background:#12355e;color:#fff;font-weight:700;cursor:pointer}
-      p{font-size:13px;color:#3d5576}
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <h1>Connexion administrateur</h1>
-      <form method="post" action="/api/admin-auth/local-login">
-        <label>Email</label>
-        <input type="email" name="email" required />
-        <label>Mot de passe</label>
-        <input type="password" name="password" required />
-        <button type="submit">Se connecter</button>
-      </form>
-      <p>Si la connexion reussit, vous serez redirige vers l'administration.</p>
-    </div>
-  </body>
-</html>`);
-  });
+
+// server/_core/adminAuth.ts
+import { randomBytes, scrypt as _scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
+var scrypt = promisify(_scrypt);
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+async function verifyScryptPassword(password, storedHash) {
+  const parts = (storedHash || "").split("$");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  const [, salt, hashHex] = parts;
+  const derived = await scrypt(password, salt, 64);
+  const expected = Buffer.from(hashHex, "hex");
+  if (expected.length !== derived.length) return false;
+  return timingSafeEqual(expected, derived);
+}
+function registerAdminAuthRoutes(app) {
   app.post("/api/admin-auth/local-login", async (req, res) => {
     try {
-      const configuredEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
-      const configuredHash = (process.env.ADMIN_PASSWORD_HASH || "").trim();
+      const configuredEmail = normalizeEmail(process.env.ADMIN_EMAIL);
+      const configuredHash = String(process.env.ADMIN_PASSWORD_HASH || "").trim();
       const configuredPlain = String(process.env.ADMIN_PASSWORD_PLAIN || "");
-      const email = String(req.body?.email || "").trim().toLowerCase();
+      const email = normalizeEmail(req.body?.email);
       const password = String(req.body?.password || "");
-      if (!configuredEmail || (!configuredHash && !configuredPlain)) {
-        return res.status(500).send("ADMIN_EMAIL + (ADMIN_PASSWORD_HASH ou ADMIN_PASSWORD_PLAIN) requis.");
+      if (!configuredEmail || !configuredHash && !configuredPlain) {
+        return res.status(500).json({
+          error: "ADMIN_EMAIL + (ADMIN_PASSWORD_HASH ou ADMIN_PASSWORD_PLAIN) requis."
+        });
       }
       if (!email || !password) {
-        return res.status(400).send("Email et mot de passe requis.");
+        return res.status(400).json({ error: "Email et mot de passe requis." });
       }
       if (email !== configuredEmail) {
-        return res.status(401).send("Identifiants invalides.");
+        return res.status(401).json({ error: "Identifiants invalides." });
       }
-      const ok = configuredPlain
-        ? password === configuredPlain
-        : await verifyCustomerPassword(password, configuredHash);
+      const ok = configuredPlain ? password === configuredPlain : await verifyScryptPassword(password, configuredHash);
       if (!ok) {
-        return res.status(401).send("Identifiants invalides.");
+        return res.status(401).json({ error: "Identifiants invalides." });
       }
       const sessionToken = await sdk.createSessionToken("local-admin", {
         name: "Admin Local",
@@ -792,9 +739,31 @@ function registerLocalAdminRoutes(app) {
       });
       const cookieOptions = getSessionCookieOptions(req);
       res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-      return res.redirect(302, "/home/admin");
+      return res.json({ success: true });
     } catch (error) {
-      return res.status(500).send(`Erreur login local: ${error?.message || "inconnue"}`);
+      return res.status(500).json({ error: error?.message || "Erreur login local" });
+    }
+  });
+  app.post("/api/admin-auth/logout", async (req, res) => {
+    const cookieOptions = getSessionCookieOptions(req);
+    res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+    return res.json({ success: true });
+  });
+  app.get("/api/admin-auth/me", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (user.role !== "admin") {
+        return res.status(403).json({ error: "Admin requis" });
+      }
+      return res.json({
+        id: user.id,
+        openId: user.openId,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      });
+    } catch {
+      return res.status(401).json({ error: "Authentification requise" });
     }
   });
 }
@@ -1331,30 +1300,30 @@ import { and as and2, eq as eq4, inArray as inArray2 } from "drizzle-orm";
 import { SignJWT as SignJWT2 } from "jose";
 
 // server/_core/customerPassword.ts
-import { randomBytes, scrypt as _scrypt, timingSafeEqual } from "node:crypto";
-import { promisify } from "node:util";
+import { randomBytes as randomBytes2, scrypt as _scrypt2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { promisify as promisify2 } from "node:util";
 import nodemailer from "nodemailer";
-var scrypt = promisify(_scrypt);
+var scrypt2 = promisify2(_scrypt2);
 function generateCustomerPassword(length = 12) {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
-  const bytes = randomBytes(length);
+  const bytes = randomBytes2(length);
   let out = "";
   for (let i = 0; i < length; i++) out += alphabet[bytes[i] % alphabet.length];
   return out;
 }
 async function hashCustomerPassword(password) {
-  const salt = randomBytes(16).toString("hex");
-  const derived = await scrypt(password, salt, 64);
+  const salt = randomBytes2(16).toString("hex");
+  const derived = await scrypt2(password, salt, 64);
   return `scrypt$${salt}$${derived.toString("hex")}`;
 }
 async function verifyCustomerPassword(password, storedHash) {
   const parts = (storedHash || "").split("$");
   if (parts.length !== 3 || parts[0] !== "scrypt") return false;
   const [, salt, hashHex] = parts;
-  const derived = await scrypt(password, salt, 64);
+  const derived = await scrypt2(password, salt, 64);
   const expected = Buffer.from(hashHex, "hex");
   if (expected.length !== derived.length) return false;
-  return timingSafeEqual(expected, derived);
+  return timingSafeEqual2(expected, derived);
 }
 async function sendCustomerPasswordEmail(email, password, reqOrigin) {
   const host = (process.env.SMTP_HOST || "").trim();
@@ -3614,7 +3583,7 @@ import { Router as Router11 } from "express";
 import { SignJWT as SignJWT3, jwtVerify as jwtVerify2 } from "jose";
 import nodemailer3 from "nodemailer";
 import { parse as parseCookie } from "cookie";
-import { createHash, randomBytes as randomBytes2 } from "node:crypto";
+import { createHash, randomBytes as randomBytes3 } from "node:crypto";
 import { eq as eq10, and as and4, gte as gte3 } from "drizzle-orm";
 var router12 = Router11();
 var CUSTOMER_COOKIE2 = "customer_session_id";
@@ -3712,7 +3681,7 @@ router12.post("/request-link", async (req, res) => {
     if (!existing.length) {
       await db.insert(customers).values({ email: normalizedEmail, authMethod: "magic_link" });
     }
-    const rawToken = randomBytes2(32).toString("hex");
+    const rawToken = randomBytes3(32).toString("hex");
     const expiresAt = new Date(Date.now() + MAGIC_LINK_TTL_MIN * 60 * 1e3);
     await db.insert(customerMagicLinks).values({
       customerEmail: normalizedEmail,
@@ -4423,7 +4392,7 @@ async function startServer() {
   app.use(express2.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
-  registerLocalAdminRoutes(app);
+  registerAdminAuthRoutes(app);
   app.use("/api/disponibilites", disponibilites_default);
   app.use("/api/avis", avis_default);
   app.use("/api/reservations", reservations_default);
