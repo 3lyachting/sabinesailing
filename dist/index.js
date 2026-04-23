@@ -693,6 +693,90 @@ function registerOAuthRoutes(app) {
     }
   });
 }
+function registerLocalAdminPages(app) {
+  app.get("/home/admin", (_req, res) => {
+    return res.redirect(302, "/home/admin/fallback");
+  });
+  app.get("/home/admin/login", (_req, res) => {
+    return res.redirect(302, "/home/admin/local-login");
+  });
+  app.get("/home/admin/local-login", (_req, res) => {
+    return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Connexion admin locale</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;margin:0;padding:24px;color:#112a4a}
+      .card{max-width:420px;margin:40px auto;background:#fff;border:1px solid #dbe4f0;border-radius:12px;padding:24px}
+      h1{font-size:20px;margin:0 0 16px}
+      label{display:block;font-size:14px;margin:12px 0 6px}
+      input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #c5d2e5;border-radius:8px}
+      button{margin-top:16px;width:100%;padding:11px;border:0;border-radius:8px;background:#12355e;color:#fff;font-weight:700;cursor:pointer}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Connexion administrateur</h1>
+      <form id="admin-login-form">
+        <label>Email</label>
+        <input type="email" name="email" required />
+        <label>Mot de passe</label>
+        <input type="password" name="password" required />
+        <button type="submit">Se connecter</button>
+      </form>
+      <p id="err" style="color:#b42318;font-size:13px;margin-top:10px;min-height:18px"></p>
+    </div>
+    <script>
+      const form = document.getElementById("admin-login-form");
+      const err = document.getElementById("err");
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        err.textContent = "";
+        const fd = new FormData(form);
+        const email = String(fd.get("email") || "");
+        const password = String(fd.get("password") || "");
+        try {
+          const response = await fetch("/api/admin-auth/local-login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ email, password })
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || !payload?.success) {
+            err.textContent = payload?.error || "Identifiants invalides.";
+            return;
+          }
+          window.location.href = "/home/admin";
+        } catch {
+          err.textContent = "Erreur reseau, reessayez.";
+        }
+      });
+    </script>
+  </body>
+</html>`);
+  });
+  app.get("/home/admin/fallback", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user || user.role !== "admin") {
+        return res.redirect(302, "/home/admin/local-login");
+      }
+      return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Admin</title></head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;padding:24px;color:#112a4a">
+<h1>Administration</h1>
+<p>Connecte en tant que <strong>${user.name || "Admin"}</strong> (${user.openId}).</p>
+<p>Back-office serveur actif. Si l'interface React est blanche, ce mode reste disponible.</p>
+<p><a href="/home/" style="color:#12355e">Retour au site</a></p>
+</body></html>`);
+    } catch {
+      return res.redirect(302, "/home/admin/local-login");
+    }
+  });
+}
 
 // server/_core/adminAuth.ts
 import { randomBytes, scrypt as _scrypt, timingSafeEqual } from "node:crypto";
@@ -739,6 +823,10 @@ function registerAdminAuthRoutes(app) {
       });
       const cookieOptions = getSessionCookieOptions(req);
       res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      const acceptsHtml = String(req.headers.accept || "").includes("text/html");
+      if (acceptsHtml) {
+        return res.redirect(302, "/home/admin");
+      }
       return res.json({ success: true });
     } catch (error) {
       return res.status(500).json({ error: error?.message || "Erreur login local" });
@@ -2080,6 +2168,10 @@ import ical from "node-ical";
 import { eq as eq8, gte as gte2 } from "drizzle-orm";
 var router8 = Router7();
 var ICAL_KEY = "google_ical_url";
+function isConfigTableMissingError(err) {
+  const message = String(err?.message || err || "").toLowerCase();
+  return message.includes('from "config"') || message.includes('relation "config"') || message.includes("config does not exist");
+}
 var cacheData = null;
 var cacheTs = 0;
 var CACHE_TTL_MS = 5 * 60 * 1e3;
@@ -2151,6 +2243,9 @@ router8.get("/events", async (_req, res) => {
     cacheTs = Date.now();
     res.json(parsed);
   } catch (err) {
+    if (isConfigTableMissingError(err)) {
+      return res.json([]);
+    }
     console.error("[iCal] Erreur:", err?.message || err);
     res.status(500).json({ error: err?.message || "Erreur iCal" });
   }
@@ -2161,32 +2256,50 @@ router8.post("/refresh", async (_req, res) => {
   res.json({ ok: true, message: "Cache iCal vid\xE9, prochain appel rechargera depuis Google" });
 });
 router8.get("/config", async (_req, res) => {
-  const db = await getDb();
-  if (!db) return res.json({ url: "", exportUrl: "/api/ical/export.ics" });
-  const [row] = await db.select().from(config).where(eq8(config.cle, ICAL_KEY)).limit(1);
-  const origin = `${_req.protocol}://${_req.get("host")}`;
-  res.json({
-    url: row?.valeur || "",
-    exportUrl: `${origin}/api/ical/export.ics`
-  });
+  try {
+    const db = await getDb();
+    if (!db) return res.json({ url: "", exportUrl: "/api/ical/export.ics" });
+    const [row] = await db.select().from(config).where(eq8(config.cle, ICAL_KEY)).limit(1);
+    const origin = `${_req.protocol}://${_req.get("host")}`;
+    res.json({
+      url: row?.valeur || "",
+      exportUrl: `${origin}/api/ical/export.ics`
+    });
+  } catch (err) {
+    if (isConfigTableMissingError(err)) {
+      const origin = `${_req.protocol}://${_req.get("host")}`;
+      return res.json({
+        url: "",
+        exportUrl: `${origin}/api/ical/export.ics`
+      });
+    }
+    return res.status(500).json({ error: err?.message || "Erreur lecture config iCal" });
+  }
 });
 router8.put("/config", async (req, res) => {
-  const { url } = req.body || {};
-  const db = await getDb();
-  if (!db) return res.status(500).json({ error: "DB indisponible" });
-  const [existing] = await db.select().from(config).where(eq8(config.cle, ICAL_KEY)).limit(1);
-  if (existing) {
-    await db.update(config).set({ valeur: url || "" }).where(eq8(config.cle, ICAL_KEY));
-  } else {
-    await db.insert(config).values({
-      cle: ICAL_KEY,
-      valeur: url || "",
-      description: "URL iCal secr\xE8te du Google Agenda Sabine Sailing"
-    });
+  try {
+    const { url } = req.body || {};
+    const db = await getDb();
+    if (!db) return res.status(500).json({ error: "DB indisponible" });
+    const [existing] = await db.select().from(config).where(eq8(config.cle, ICAL_KEY)).limit(1);
+    if (existing) {
+      await db.update(config).set({ valeur: url || "" }).where(eq8(config.cle, ICAL_KEY));
+    } else {
+      await db.insert(config).values({
+        cle: ICAL_KEY,
+        valeur: url || "",
+        description: "URL iCal secr\xE8te du Google Agenda Sabine Sailing"
+      });
+    }
+    cacheData = null;
+    cacheTs = 0;
+    res.json({ ok: true });
+  } catch (err) {
+    if (isConfigTableMissingError(err)) {
+      return res.status(503).json({ error: "Table config absente. Lancez la migration base de donnees." });
+    }
+    return res.status(500).json({ error: err?.message || "Erreur ecriture config iCal" });
   }
-  cacheData = null;
-  cacheTs = 0;
-  res.json({ ok: true });
 });
 router8.get("/export.ics", async (_req, res) => {
   try {
@@ -4392,6 +4505,7 @@ async function startServer() {
   app.use(express2.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerLocalAdminPages(app);
   registerAdminAuthRoutes(app);
   app.use("/api/disponibilites", disponibilites_default);
   app.use("/api/avis", avis_default);
