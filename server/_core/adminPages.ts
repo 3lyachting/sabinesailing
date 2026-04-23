@@ -2,13 +2,8 @@ import type { Express, Request, Response } from "express";
 import { sdk } from "./sdk";
 
 export function registerLocalAdminPages(app: Express) {
-  app.get("/home/admin", (_req: Request, res: Response) => {
-    return res.redirect(302, "/home/admin/fallback");
-  });
-
-  app.get("/home/admin/login", (_req: Request, res: Response) => {
-    return res.redirect(302, "/home/admin/local-login");
-  });
+  // Keep stable fallback routes available, but let /home/admin and /home/admin/login
+  // be handled by the React app (served through static SPA fallback).
 
   app.get("/home/admin/local-login", (_req: Request, res: Response) => {
     return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
