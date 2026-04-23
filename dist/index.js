@@ -774,6 +774,19 @@ function registerAdminAuthRoutes(app) {
 
 // server/_core/adminPages.ts
 function registerLocalAdminPages(app) {
+  app.get("/home/admin", (_req, res) => {
+    return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
+<html lang="fr">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>Admin Access</title></head>
+  <body style="font-family:Arial,Helvetica,sans-serif;padding:24px;background:#ffffff;color:#111111">
+    <h1>Acces Back-Office</h1>
+    <p>Cette page est un point d'entree admin force pour eviter toute page blanche.</p>
+    <p><a href="/home/admin/local-login">Ouvrir la connexion admin</a></p>
+    <p><a href="/home/admin/fallback">Ouvrir le back-office fallback</a></p>
+    <p><a href="/home/">Retour au site</a></p>
+  </body>
+</html>`);
+  });
   app.get("/home/admin/login", (_req, res) => {
     return res.redirect(302, "/home/admin/local-login");
   });
@@ -1092,6 +1105,38 @@ async function requireAdmin(req, res, next) {
   }
 }
 
+// server/_core/bookingRules.ts
+var DAY_MS = 24 * 60 * 60 * 1e3;
+function toUtcMidnight(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+function isSaturdayUtc(value) {
+  return toUtcMidnight(value).getUTCDay() === 6;
+}
+function validateSaturdayToSaturdayWindow(start, end) {
+  const startDate = toUtcMidnight(start);
+  const endDate = toUtcMidnight(end);
+  const diffDays = Math.round((endDate.getTime() - startDate.getTime()) / DAY_MS);
+  if (!isSaturdayUtc(startDate) || !isSaturdayUtc(endDate)) {
+    return {
+      ok: false,
+      error: "Les r\xE9servations doivent imp\xE9rativement commencer et finir un samedi."
+    };
+  }
+  if (diffDays !== 7) {
+    return {
+      ok: false,
+      error: "La location est hebdomadaire uniquement: du samedi au samedi (7 nuits)."
+    };
+  }
+  return { ok: true };
+}
+function normalizeReservationType(value) {
+  if (value === "cabine" || value === "place") return value;
+  return "bateau_entier";
+}
+
 // server/routes/disponibilites.ts
 var router2 = Router();
 async function syncDisponibilitesFromReservations(db) {
@@ -1221,6 +1266,10 @@ router2.post("/", requireAdmin, async (req, res) => {
     if (!debut || !fin || !statut || !destination) {
       return res.status(400).json({ error: "Champs requis manquants" });
     }
+    const weeklyRule = validateSaturdayToSaturdayWindow(debut, fin);
+    if (!weeklyRule.ok) {
+      return res.status(400).json({ error: weeklyRule.error });
+    }
     const result = await db.insert(disponibilites).values({
       planningType: planningType || "charter",
       debut: new Date(debut),
@@ -1259,6 +1308,18 @@ router2.put("/:id", requireAdmin, async (req, res) => {
       note,
       notePublique
     } = req.body;
+    if (debut || fin) {
+      const current = await db.select().from(disponibilites).where(eq2(disponibilites.id, parseInt(id, 10))).limit(1);
+      if (!current.length) {
+        return res.status(404).json({ error: "Disponibilit\xE9 introuvable" });
+      }
+      const resolvedStart = debut ? new Date(debut) : current[0].debut;
+      const resolvedEnd = fin ? new Date(fin) : current[0].fin;
+      const weeklyRule = validateSaturdayToSaturdayWindow(resolvedStart, resolvedEnd);
+      if (!weeklyRule.ok) {
+        return res.status(400).json({ error: weeklyRule.error });
+      }
+    }
     await db.update(disponibilites).set({
       planningType: planningType || void 0,
       debut: debut ? new Date(debut) : void 0,
@@ -1476,6 +1537,51 @@ async function sendCustomerPasswordEmail(email, password, reqOrigin) {
   return { sent: true };
 }
 
+// server/_core/reservationPolicy.ts
+function evaluateReservationFeasibility(args) {
+  const {
+    requestedType,
+    requestedUnits,
+    capacityUnits,
+    existingConfirmedReservations,
+    existingMarkedUnits = 0,
+    planningType,
+    statut
+  } = args;
+  if (planningType && planningType !== "charter") {
+    return { ok: false, error: "Cette semaine est bloqu\xE9e (maintenance, arr\xEAt technique ou fermeture)." };
+  }
+  if (statut === "ferme" || statut === "reserve") {
+    return { ok: false, error: "Cette semaine n'est plus r\xE9servable." };
+  }
+  const hasPrivate = existingConfirmedReservations.some((r) => r.typeReservation === "bateau_entier");
+  if (hasPrivate) {
+    return { ok: false, error: "Le bateau est d\xE9j\xE0 r\xE9serv\xE9 en privatif sur cette semaine." };
+  }
+  if (requestedType === "bateau_entier") {
+    const hasCabins = existingConfirmedReservations.some(
+      (r) => r.typeReservation === "cabine" || r.typeReservation === "place"
+    );
+    if (hasCabins || existingMarkedUnits > 0) {
+      return {
+        ok: false,
+        error: "Des cabines sont d\xE9j\xE0 r\xE9serv\xE9es. Le bateau entier n'est plus r\xE9servable pour cette semaine."
+      };
+    }
+    return { ok: true };
+  }
+  const confirmedUnits = existingConfirmedReservations.filter((r) => r.typeReservation === "cabine" || r.typeReservation === "place").reduce((sum, r) => sum + Math.max(1, r.nbCabines || 1), 0);
+  const currentlyReserved = Math.max(confirmedUnits, existingMarkedUnits);
+  const nextReserved = currentlyReserved + Math.max(1, requestedUnits);
+  if (nextReserved > Math.max(1, capacityUnits)) {
+    return {
+      ok: false,
+      error: `Il ne reste pas assez de cabines disponibles (${Math.max(0, capacityUnits - currentlyReserved)} restantes).`
+    };
+  }
+  return { ok: true };
+}
+
 // server/routes/reservations.ts
 var router4 = Router3();
 var CUSTOMER_COOKIE = "customer_session_id";
@@ -1566,8 +1672,12 @@ router4.post("/request", async (req, res) => {
     if (parsedNbPersonnes > 8) {
       return res.status(400).json({ error: "Maximum 8 personnes par semaine." });
     }
-    const normalizedTypeReservation = typeReservation === "cabine" || typeReservation === "place" ? typeReservation : "bateau_entier";
+    const normalizedTypeReservation = normalizeReservationType(typeReservation);
     const computedNbCabines = normalizedTypeReservation === "cabine" ? Math.max(1, Math.ceil(parsedNbPersonnes / 2)) : Math.max(1, parseInt(nbCabines) || 1);
+    const weeklyRule = validateSaturdayToSaturdayWindow(dateDebut, dateFin);
+    if (!weeklyRule.ok) {
+      return res.status(400).json({ error: weeklyRule.error });
+    }
     const customerRows = await db.select().from(customers).where(eq4(customers.email, normalizedEmail)).limit(1);
     let customerId = customerRows[0]?.id;
     let createdPassword = null;
@@ -1606,14 +1716,34 @@ router4.post("/request", async (req, res) => {
       dateDebut,
       dateFin
     });
-    if (normalizedTypeReservation === "cabine" && parsedDisponibiliteId) {
-      const existingCab = await db.select().from(cabinesReservees).where(eq4(cabinesReservees.disponibiliteId, parsedDisponibiliteId)).limit(1);
-      if (existingCab.length > 0) {
-        const nextReserved = (existingCab[0].nbReservees || 0) + computedNbCabines;
-        const totalCab = existingCab[0].nbTotal || 4;
-        if (nextReserved > totalCab) {
-          return res.status(400).json({ error: `Il ne reste pas assez de cabines disponibles (${totalCab - (existingCab[0].nbReservees || 0)} restantes).` });
-        }
+    if (parsedDisponibiliteId) {
+      const targetDispoRows = await db.select().from(disponibilites).where(eq4(disponibilites.id, parsedDisponibiliteId)).limit(1);
+      const targetDispo = targetDispoRows[0];
+      if (!targetDispo) {
+        return res.status(400).json({ error: "Semaine introuvable." });
+      }
+      const targetWeeklyRule = validateSaturdayToSaturdayWindow(targetDispo.debut, targetDispo.fin);
+      if (!targetWeeklyRule.ok) {
+        return res.status(400).json({ error: targetWeeklyRule.error });
+      }
+      const confirmedReservations = await db.select().from(reservations).where(
+        and2(
+          eq4(reservations.disponibiliteId, parsedDisponibiliteId),
+          inArray2(reservations.workflowStatut, ["contrat_signe", "acompte_confirme", "solde_confirme"])
+        )
+      );
+      const existingCabRows = await db.select().from(cabinesReservees).where(eq4(cabinesReservees.disponibiliteId, parsedDisponibiliteId)).limit(1);
+      const policy = evaluateReservationFeasibility({
+        requestedType: normalizedTypeReservation,
+        requestedUnits: computedNbCabines,
+        capacityUnits: targetDispo.capaciteTotale || 4,
+        planningType: targetDispo.planningType || "charter",
+        statut: targetDispo.statut,
+        existingConfirmedReservations: confirmedReservations,
+        existingMarkedUnits: existingCabRows[0]?.nbReservees || 0
+      });
+      if (!policy.ok) {
+        return res.status(400).json({ error: policy.error });
       }
     }
     const inserted = await db.insert(reservations).values({
@@ -1770,10 +1900,16 @@ router4.put("/:id", requireAdmin, async (req, res) => {
     if (parsedNbPersonnes > 8) {
       return res.status(400).json({ error: "Maximum 8 personnes par semaine." });
     }
+    const resolvedDateStart = dateDebut ? String(dateDebut) : new Date(existing[0].dateDebut).toISOString();
+    const resolvedDateEnd = dateFin ? String(dateFin) : new Date(existing[0].dateFin).toISOString();
+    const weeklyRule = validateSaturdayToSaturdayWindow(resolvedDateStart, resolvedDateEnd);
+    if (!weeklyRule.ok) {
+      return res.status(400).json({ error: weeklyRule.error });
+    }
     const resolvedDisponibiliteId = await resolveDisponibiliteIdForReservation(db, {
       disponibiliteId: disponibiliteId !== void 0 ? disponibiliteId !== null ? parseInt(disponibiliteId) : null : existing[0].disponibiliteId,
-      dateDebut: dateDebut ? String(dateDebut) : new Date(existing[0].dateDebut).toISOString(),
-      dateFin: dateFin ? String(dateFin) : new Date(existing[0].dateFin).toISOString()
+      dateDebut: resolvedDateStart,
+      dateFin: resolvedDateEnd
     });
     await db.update(reservations).set({
       nomClient: nomClient || existing[0].nomClient,

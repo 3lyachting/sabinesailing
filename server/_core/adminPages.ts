@@ -2,6 +2,20 @@ import type { Express, Request, Response } from "express";
 import { sdk } from "./sdk";
 
 export function registerLocalAdminPages(app: Express) {
+  app.get("/home/admin", (_req: Request, res: Response) => {
+    return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
+<html lang="fr">
+  <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>Admin Access</title></head>
+  <body style="font-family:Arial,Helvetica,sans-serif;padding:24px;background:#ffffff;color:#111111">
+    <h1>Acces Back-Office</h1>
+    <p>Cette page est un point d'entree admin force pour eviter toute page blanche.</p>
+    <p><a href="/home/admin/local-login">Ouvrir la connexion admin</a></p>
+    <p><a href="/home/admin/fallback">Ouvrir le back-office fallback</a></p>
+    <p><a href="/home/">Retour au site</a></p>
+  </body>
+</html>`);
+  });
+
   app.get("/home/admin/login", (_req: Request, res: Response) => {
     return res.redirect(302, "/home/admin/local-login");
   });
