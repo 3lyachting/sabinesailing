@@ -541,7 +541,7 @@ var SDKServer = class {
     return this.signSession(
       {
         openId,
-        appId: ENV.appId,
+        appId: ENV.appId || "local-app",
         name: options.name || ""
       },
       options
@@ -569,13 +569,13 @@ var SDKServer = class {
         algorithms: ["HS256"]
       });
       const { openId, appId, name } = payload;
-      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || !isNonEmptyString(name)) {
+      if (!isNonEmptyString(openId) || !isNonEmptyString(name)) {
         console.warn("[Auth] Session payload missing required fields");
         return null;
       }
       return {
         openId,
-        appId,
+        appId: isNonEmptyString(appId) ? appId : "local-app",
         name
       };
     } catch (error) {
@@ -611,6 +611,18 @@ var SDKServer = class {
     }
     const sessionUserId = session.openId;
     const signedInAt = /* @__PURE__ */ new Date();
+    if (sessionUserId === "local-admin") {
+      return {
+        id: 0,
+        openId: "local-admin",
+        name: "Admin Local",
+        email: process.env.ADMIN_EMAIL ?? null,
+        role: "admin",
+        createdAt: signedInAt,
+        updatedAt: signedInAt,
+        lastSignedIn: signedInAt
+      };
+    }
     let user = await getUserByOpenId(sessionUserId);
     if (!user) {
       try {
@@ -677,6 +689,70 @@ function registerOAuthRoutes(app) {
     } catch (error) {
       console.error("[OAuth] Callback failed", error);
       res.status(500).json({ error: "OAuth callback failed" });
+    }
+  });
+}
+function registerLocalAdminRoutes(app) {
+  app.get("/home/admin/local-login", (_req, res) => {
+    res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Connexion admin locale</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;margin:0;padding:24px;color:#112a4a}
+      .card{max-width:420px;margin:40px auto;background:#fff;border:1px solid #dbe4f0;border-radius:12px;padding:24px}
+      h1{font-size:20px;margin:0 0 16px}
+      label{display:block;font-size:14px;margin:12px 0 6px}
+      input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #c5d2e5;border-radius:8px}
+      button{margin-top:16px;width:100%;padding:11px;border:0;border-radius:8px;background:#12355e;color:#fff;font-weight:700;cursor:pointer}
+      p{font-size:13px;color:#3d5576}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Connexion administrateur</h1>
+      <form method="post" action="/api/admin-auth/local-login">
+        <label>Email</label>
+        <input type="email" name="email" required />
+        <label>Mot de passe</label>
+        <input type="password" name="password" required />
+        <button type="submit">Se connecter</button>
+      </form>
+      <p>Si la connexion reussit, vous serez redirige vers l'administration.</p>
+    </div>
+  </body>
+</html>`);
+  });
+  app.post("/api/admin-auth/local-login", async (req, res) => {
+    try {
+      const configuredEmail = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+      const configuredHash = (process.env.ADMIN_PASSWORD_HASH || "").trim();
+      const email = String(req.body?.email || "").trim().toLowerCase();
+      const password = String(req.body?.password || "");
+      if (!configuredEmail || !configuredHash) {
+        return res.status(500).send("ADMIN_EMAIL ou ADMIN_PASSWORD_HASH manquant dans l'environnement.");
+      }
+      if (!email || !password) {
+        return res.status(400).send("Email et mot de passe requis.");
+      }
+      if (email !== configuredEmail) {
+        return res.status(401).send("Identifiants invalides.");
+      }
+      const ok = await verifyCustomerPassword(password, configuredHash);
+      if (!ok) {
+        return res.status(401).send("Identifiants invalides.");
+      }
+      const sessionToken = await sdk.createSessionToken("local-admin", {
+        name: "Admin Local",
+        expiresInMs: ONE_YEAR_MS
+      });
+      const cookieOptions = getSessionCookieOptions(req);
+      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+      return res.redirect(302, "/home/admin");
+    } catch (error) {
+      return res.status(500).send(`Erreur login local: ${error?.message || "inconnue"}`);
     }
   });
 }
@@ -903,15 +979,6 @@ import { eq as eq2, and, gte, inArray, lte } from "drizzle-orm";
 
 // server/_core/authz.ts
 async function requireAdmin(req, res, next) {
-  if (process.env.ADMIN_BYPASS === "true") {
-    req.authUser = {
-      id: 0,
-      openId: "local-admin",
-      name: "Admin Local",
-      role: "admin"
-    };
-    return next();
-  }
   if (process.env.NODE_ENV !== "production") {
     return next();
   }
@@ -4010,18 +4077,6 @@ var backofficeOps_default = router15;
 
 // server/_core/context.ts
 async function createContext(opts) {
-  if (process.env.ADMIN_BYPASS === "true") {
-    return {
-      req: opts.req,
-      res: opts.res,
-      user: {
-        id: 0,
-        openId: "local-admin",
-        name: "Admin Local",
-        role: "admin"
-      }
-    };
-  }
   let user = null;
   try {
     user = await sdk.authenticateRequest(opts.req);
@@ -4326,6 +4381,7 @@ async function startServer() {
   app.use(express2.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerLocalAdminRoutes(app);
   app.use("/api/disponibilites", disponibilites_default);
   app.use("/api/avis", avis_default);
   app.use("/api/reservations", reservations_default);
