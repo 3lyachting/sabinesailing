@@ -65,6 +65,11 @@ export function registerAdminAuthRoutes(app: Express) {
       const cookieOptions = getSessionCookieOptions(req);
       res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
 
+      const acceptsHtml = String(req.headers.accept || "").includes("text/html");
+      if (acceptsHtml) {
+        return res.redirect(302, "/home/admin");
+      }
+
       return res.json({ success: true });
     } catch (error: any) {
       return res.status(500).json({ error: error?.message || "Erreur login local" });
