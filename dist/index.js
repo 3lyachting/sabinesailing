@@ -2080,6 +2080,10 @@ import ical from "node-ical";
 import { eq as eq8, gte as gte2 } from "drizzle-orm";
 var router8 = Router7();
 var ICAL_KEY = "google_ical_url";
+function isConfigTableMissingError(err) {
+  const message = String(err?.message || err || "").toLowerCase();
+  return message.includes('from "config"') || message.includes('relation "config"') || message.includes("config does not exist");
+}
 var cacheData = null;
 var cacheTs = 0;
 var CACHE_TTL_MS = 5 * 60 * 1e3;
@@ -2151,6 +2155,9 @@ router8.get("/events", async (_req, res) => {
     cacheTs = Date.now();
     res.json(parsed);
   } catch (err) {
+    if (isConfigTableMissingError(err)) {
+      return res.json([]);
+    }
     console.error("[iCal] Erreur:", err?.message || err);
     res.status(500).json({ error: err?.message || "Erreur iCal" });
   }
@@ -2161,32 +2168,50 @@ router8.post("/refresh", async (_req, res) => {
   res.json({ ok: true, message: "Cache iCal vid\xE9, prochain appel rechargera depuis Google" });
 });
 router8.get("/config", async (_req, res) => {
-  const db = await getDb();
-  if (!db) return res.json({ url: "", exportUrl: "/api/ical/export.ics" });
-  const [row] = await db.select().from(config).where(eq8(config.cle, ICAL_KEY)).limit(1);
-  const origin = `${_req.protocol}://${_req.get("host")}`;
-  res.json({
-    url: row?.valeur || "",
-    exportUrl: `${origin}/api/ical/export.ics`
-  });
+  try {
+    const db = await getDb();
+    if (!db) return res.json({ url: "", exportUrl: "/api/ical/export.ics" });
+    const [row] = await db.select().from(config).where(eq8(config.cle, ICAL_KEY)).limit(1);
+    const origin = `${_req.protocol}://${_req.get("host")}`;
+    res.json({
+      url: row?.valeur || "",
+      exportUrl: `${origin}/api/ical/export.ics`
+    });
+  } catch (err) {
+    if (isConfigTableMissingError(err)) {
+      const origin = `${_req.protocol}://${_req.get("host")}`;
+      return res.json({
+        url: "",
+        exportUrl: `${origin}/api/ical/export.ics`
+      });
+    }
+    return res.status(500).json({ error: err?.message || "Erreur lecture config iCal" });
+  }
 });
 router8.put("/config", async (req, res) => {
-  const { url } = req.body || {};
-  const db = await getDb();
-  if (!db) return res.status(500).json({ error: "DB indisponible" });
-  const [existing] = await db.select().from(config).where(eq8(config.cle, ICAL_KEY)).limit(1);
-  if (existing) {
-    await db.update(config).set({ valeur: url || "" }).where(eq8(config.cle, ICAL_KEY));
-  } else {
-    await db.insert(config).values({
-      cle: ICAL_KEY,
-      valeur: url || "",
-      description: "URL iCal secr\xE8te du Google Agenda Sabine Sailing"
-    });
+  try {
+    const { url } = req.body || {};
+    const db = await getDb();
+    if (!db) return res.status(500).json({ error: "DB indisponible" });
+    const [existing] = await db.select().from(config).where(eq8(config.cle, ICAL_KEY)).limit(1);
+    if (existing) {
+      await db.update(config).set({ valeur: url || "" }).where(eq8(config.cle, ICAL_KEY));
+    } else {
+      await db.insert(config).values({
+        cle: ICAL_KEY,
+        valeur: url || "",
+        description: "URL iCal secr\xE8te du Google Agenda Sabine Sailing"
+      });
+    }
+    cacheData = null;
+    cacheTs = 0;
+    res.json({ ok: true });
+  } catch (err) {
+    if (isConfigTableMissingError(err)) {
+      return res.status(503).json({ error: "Table config absente. Lancez la migration base de donnees." });
+    }
+    return res.status(500).json({ error: err?.message || "Erreur ecriture config iCal" });
   }
-  cacheData = null;
-  cacheTs = 0;
-  res.json({ ok: true });
 });
 router8.get("/export.ics", async (_req, res) => {
   try {
