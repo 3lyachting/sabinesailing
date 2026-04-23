@@ -693,6 +693,59 @@ function registerOAuthRoutes(app) {
     }
   });
 }
+function registerLocalAdminPages(app) {
+  app.get("/home/admin/login", (_req, res) => {
+    return res.redirect(302, "/home/admin/local-login");
+  });
+  app.get("/home/admin/local-login", (_req, res) => {
+    return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Connexion admin locale</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;margin:0;padding:24px;color:#112a4a}
+      .card{max-width:420px;margin:40px auto;background:#fff;border:1px solid #dbe4f0;border-radius:12px;padding:24px}
+      h1{font-size:20px;margin:0 0 16px}
+      label{display:block;font-size:14px;margin:12px 0 6px}
+      input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #c5d2e5;border-radius:8px}
+      button{margin-top:16px;width:100%;padding:11px;border:0;border-radius:8px;background:#12355e;color:#fff;font-weight:700;cursor:pointer}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Connexion administrateur</h1>
+      <form method="post" action="/api/admin-auth/local-login">
+        <label>Email</label>
+        <input type="email" name="email" required />
+        <label>Mot de passe</label>
+        <input type="password" name="password" required />
+        <button type="submit">Se connecter</button>
+      </form>
+    </div>
+  </body>
+</html>`);
+  });
+  app.get("/home/admin", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user || user.role !== "admin") {
+        return res.redirect(302, "/home/admin/local-login");
+      }
+      return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Admin</title></head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;padding:24px;color:#112a4a">
+<h1>Administration</h1>
+<p>Connecte en tant que <strong>${user.name || "Admin"}</strong> (${user.openId}).</p>
+<p>Back-office serveur actif. Si l'interface React est blanche, ce mode reste disponible.</p>
+<p><a href="/home/" style="color:#12355e">Retour au site</a></p>
+</body></html>`);
+    } catch {
+      return res.redirect(302, "/home/admin/local-login");
+    }
+  });
+}
 
 // server/_core/adminAuth.ts
 import { randomBytes, scrypt as _scrypt, timingSafeEqual } from "node:crypto";
@@ -4417,6 +4470,7 @@ async function startServer() {
   app.use(express2.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerLocalAdminPages(app);
   registerAdminAuthRoutes(app);
   app.use("/api/disponibilites", disponibilites_default);
   app.use("/api/avis", avis_default);
