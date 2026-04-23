@@ -693,6 +693,45 @@ function registerOAuthRoutes(app) {
   });
 }
 function registerLocalAdminRoutes(app) {
+  app.get("/home/admin", async (req, res) => {
+    try {
+      const user = await sdk.authenticateRequest(req);
+      if (!user || user.role !== "admin") {
+        return res.redirect(302, "/home/admin/local-login");
+      }
+      return res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Admin Sabine Sailing</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;margin:0;padding:24px;color:#112a4a}
+      .card{max-width:760px;margin:20px auto;background:#fff;border:1px solid #dbe4f0;border-radius:12px;padding:24px}
+      h1{margin:0 0 8px}
+      p{color:#3d5576}
+      a{display:inline-block;margin:8px 8px 0 0;padding:10px 14px;background:#12355e;color:#fff;text-decoration:none;border-radius:8px}
+      code{background:#eef3fa;padding:2px 6px;border-radius:6px}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Administration</h1>
+      <p>Connecte en tant que <strong>${user.name || "Admin"}</strong> (${user.openId}).</p>
+      <p>Le panneau React est temporairement indisponible. Cette page permet de continuer l'exploitation.</p>
+      <a href="/home/">Retour au site</a>
+      <a href="/api/customer-auth/logout">Deconnexion client</a>
+      <p style="margin-top:16px">Endpoints utiles:</p>
+      <p><code>/api/disponibilites</code> - disponibilites</p>
+      <p><code>/api/reservations</code> - reservations</p>
+      <p><code>/api/workflow/reservations/:id/documents</code> - documents dossier</p>
+    </div>
+  </body>
+</html>`);
+    } catch {
+      return res.redirect(302, "/home/admin/local-login");
+    }
+  });
   app.get("/home/admin/local-login", (_req, res) => {
     res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).send(`<!doctype html>
 <html lang="fr">
