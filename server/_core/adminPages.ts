@@ -2,10 +2,6 @@ import type { Express, Request, Response } from "express";
 import { sdk } from "./sdk";
 
 export function registerLocalAdminPages(app: Express) {
-  app.get("/home/admin", (_req: Request, res: Response) => {
-    return res.redirect(302, "/home/admin/fallback");
-  });
-
   app.get("/home/admin/login", (_req: Request, res: Response) => {
     return res.redirect(302, "/home/admin/local-login");
   });
